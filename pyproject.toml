@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-platform-molecule-a2a"
+version = "0.1.0"
+description = "Hermes platform adapter for Molecule A2A peer-agent messaging"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Molecule AI" }]
+dependencies = [
+    "aiohttp>=3.9",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "aiohttp>=3.9",
+]
+
+# Hermes plugin discovery loads this entry point at startup.
+# Hermes resolves the value as a module and then calls its top-level
+# ``register(ctx)`` function. Pointing at the package (no colon) makes
+# ep.load() return the module so getattr(module, "register") succeeds.
+[project.entry-points."hermes_agent.plugins"]
+molecule_a2a = "hermes_platform_molecule_a2a"
+
+[tool.setuptools.packages.find]
+include = ["hermes_platform_molecule_a2a*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.tox/
+.coverage
+.venv/
+venv/
+.DS_Store
+.hermes_test_home/
+.hermes_e2e_home/
