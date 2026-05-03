@@ -80,7 +80,24 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
-from hermes_cli.plugins import PluginPlatformIdentifier
+from gateway.config import Platform
+
+
+def _platform_identity(name: str):
+    """Pick the right Platform-shaped identity for the installed hermes.
+
+    Upstream NousResearch/hermes-agent#17751 (merged 2026-04-30) made
+    Platform an open enum (``Platform("molecule-a2a")`` works via
+    ``_missing_()``). Pre-#17751 forks have a closed enum + ship
+    ``PluginPlatformIdentifier`` for plugin-supplied platforms instead.
+    Detect at import time so the same plugin works on both.
+    """
+    try:
+        return Platform(name)
+    except ValueError:
+        from hermes_cli.plugins import PluginPlatformIdentifier
+        return PluginPlatformIdentifier(name)
+
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +119,7 @@ class MoleculeA2APlatformAdapter(BasePlatformAdapter):
     gateway, and POST agent replies back to the molecule-runtime."""
 
     def __init__(self, config: PlatformConfig):
-        super().__init__(config, PluginPlatformIdentifier(PLATFORM_NAME))
+        super().__init__(config, _platform_identity(PLATFORM_NAME))
         extra = getattr(config, "extra", None) or {}
         self._host: str = extra.get("host", DEFAULT_HOST)
         self._port: int = int(extra.get("port", DEFAULT_PORT))
