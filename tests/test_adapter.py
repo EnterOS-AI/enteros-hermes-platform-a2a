@@ -308,3 +308,200 @@ async def test_get_chat_info_returns_minimal_metadata():
     adapter = _make_adapter()
     info = await adapter.get_chat_info("chat-X")
     assert info == {"name": "chat-X", "type": "dm", "chat_id": "chat-X"}
+
+
+# ---- transcript seeding (belt-and-suspenders, task #385) -----------
+
+
+class _FakeSessionEntry:
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+
+
+class _FakeSessionStore:
+    """Minimal stand-in for gateway.session.SessionStore — captures the
+    seed calls so we can assert the adapter's belt-and-suspenders
+    behavior without standing up the real SQLite-backed store."""
+
+    def __init__(self, existing_transcript: List[Dict[str, Any]] | None = None):
+        self.entry = _FakeSessionEntry("test-session-1")
+        self.existing_transcript = list(existing_transcript or [])
+        self.appended: List[Dict[str, Any]] = []
+        self.get_or_create_calls = 0
+        self.load_calls = 0
+
+    def get_or_create_session(self, _source):
+        self.get_or_create_calls += 1
+        return self.entry
+
+    def load_transcript(self, _session_id):
+        self.load_calls += 1
+        return list(self.existing_transcript)
+
+    def append_to_transcript(self, _session_id, message):
+        self.appended.append(message)
+
+
+@pytest.mark.asyncio
+async def test_plugin_adapter_seeds_transcript_on_fresh_session():
+    """Daemon transcript empty → adapter seeds it with the canvas-shipped
+    history (one append_to_transcript per turn entry)."""
+    port = _free_port()
+    adapter = _make_adapter(host="127.0.0.1", port=port)
+    store = _FakeSessionStore(existing_transcript=[])
+    adapter.set_session_store(store)
+    adapter.set_message_handler(
+        lambda event: None  # type: ignore[func-returns-value, return-value]
+    )
+    history = [
+        {"role": "user", "content": "Hi, my name is Hongming."},
+        {"role": "assistant", "content": "Hello Hongming!"},
+        {"role": "user", "content": "does he have a local repo?"},
+    ]
+    try:
+        await adapter.connect()
+        async with ClientSession(timeout=ClientTimeout(total=5)) as session:
+            payload = {
+                "chat_id": "workspace:ws-1",
+                "peer_id": "",
+                "peer_name": "",
+                "content": "current turn",
+                "message_id": "msg-N",
+                "callback_url": "http://example.test/reply",
+                "messages_history": history,
+            }
+            async with session.post(
+                f"http://127.0.0.1:{port}{INBOUND_PATH}", json=payload
+            ) as r:
+                assert r.status == 200
+    finally:
+        await adapter.disconnect()
+
+    assert store.get_or_create_calls == 1
+    assert store.load_calls == 1
+    # One append per turn, in order, body preserved.
+    assert store.appended == history
+
+
+@pytest.mark.asyncio
+async def test_plugin_adapter_skips_seed_when_transcript_populated():
+    """Daemon transcript already has >= len(history) entries → adapter
+    must NOT re-seed (preserve subsequent-turn idempotence within a
+    single container lifecycle)."""
+    port = _free_port()
+    adapter = _make_adapter(host="127.0.0.1", port=port)
+    history = [
+        {"role": "user", "content": "Hi, my name is Hongming."},
+        {"role": "assistant", "content": "Hello Hongming!"},
+    ]
+    # Daemon already has these turns (and maybe more).
+    existing = list(history) + [{"role": "user", "content": "extra"}]
+    store = _FakeSessionStore(existing_transcript=existing)
+    adapter.set_session_store(store)
+    adapter.set_message_handler(
+        lambda event: None  # type: ignore[func-returns-value, return-value]
+    )
+    try:
+        await adapter.connect()
+        async with ClientSession(timeout=ClientTimeout(total=5)) as session:
+            payload = {
+                "chat_id": "workspace:ws-1",
+                "content": "another turn",
+                "message_id": "msg-M",
+                "messages_history": history,
+            }
+            async with session.post(
+                f"http://127.0.0.1:{port}{INBOUND_PATH}", json=payload
+            ) as r:
+                assert r.status == 200
+    finally:
+        await adapter.disconnect()
+
+    assert store.get_or_create_calls == 1
+    assert store.load_calls == 1
+    # No re-append since len(existing) >= len(history).
+    assert store.appended == []
+
+
+@pytest.mark.asyncio
+async def test_plugin_adapter_ignores_malformed_messages_history():
+    """Defensive: malformed messages_history (not a list, or empty) is
+    skipped silently; the inbound POST still dispatches normally so the
+    user message reaches the agent. Mirrors the executor-side guard."""
+    port = _free_port()
+    adapter = _make_adapter(host="127.0.0.1", port=port)
+    store = _FakeSessionStore(existing_transcript=[])
+    adapter.set_session_store(store)
+    received: List[MessageEvent] = []
+
+    async def handler(event: MessageEvent):
+        received.append(event)
+        return None
+
+    adapter.set_message_handler(handler)
+    try:
+        await adapter.connect()
+        async with ClientSession(timeout=ClientTimeout(total=5)) as session:
+            # not-a-list
+            async with session.post(
+                f"http://127.0.0.1:{port}{INBOUND_PATH}",
+                json={
+                    "chat_id": "ws-1",
+                    "content": "hi",
+                    "messages_history": "not-a-list",
+                },
+            ) as r:
+                assert r.status == 200
+            # empty list
+            async with session.post(
+                f"http://127.0.0.1:{port}{INBOUND_PATH}",
+                json={
+                    "chat_id": "ws-1",
+                    "content": "hi-again",
+                    "messages_history": [],
+                },
+            ) as r:
+                assert r.status == 200
+
+        # Wait for background dispatch.
+        for _ in range(50):
+            if len(received) >= 2:
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        await adapter.disconnect()
+
+    # No session-store interaction since both shapes were malformed.
+    assert store.get_or_create_calls == 0
+    assert store.appended == []
+    # Both messages still dispatched.
+    assert len(received) == 2
+
+
+@pytest.mark.asyncio
+async def test_plugin_adapter_no_session_store_seed_is_noop():
+    """If the gateway never injected a session store (legacy boot path
+    / unit-test scaffolding), the seed path must be a no-op — never
+    AttributeError."""
+    port = _free_port()
+    adapter = _make_adapter(host="127.0.0.1", port=port)
+    # NOTE: deliberately NOT calling set_session_store.
+    adapter.set_message_handler(
+        lambda event: None  # type: ignore[func-returns-value, return-value]
+    )
+    try:
+        await adapter.connect()
+        async with ClientSession(timeout=ClientTimeout(total=5)) as session:
+            async with session.post(
+                f"http://127.0.0.1:{port}{INBOUND_PATH}",
+                json={
+                    "chat_id": "ws-1",
+                    "content": "hi",
+                    "messages_history": [
+                        {"role": "user", "content": "old"},
+                    ],
+                },
+            ) as r:
+                assert r.status == 200
+    finally:
+        await adapter.disconnect()

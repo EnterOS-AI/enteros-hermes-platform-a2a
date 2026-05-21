@@ -222,6 +222,17 @@ class MoleculeA2APlatformAdapter(BasePlatformAdapter):
             user_name=peer_name,
             thread_id=payload.get("thread_id"),
         )
+
+        # Belt-and-suspenders session continuity (task #385): if the
+        # caller shipped messages_history AND the daemon's session for
+        # this chat is fresh (no transcript yet, or shorter than the
+        # supplied history), seed the transcript so the agent has the
+        # prior turns. No-op once the daemon's own SessionStore has
+        # accumulated the same turns — i.e. on every subsequent turn
+        # within the same container lifecycle. Skipped silently if
+        # messages_history is malformed; the turn still dispatches.
+        self._maybe_seed_transcript(source, payload.get("messages_history"))
+
         event = MessageEvent(
             text=content,
             message_type=MessageType.TEXT,
@@ -236,6 +247,30 @@ class MoleculeA2APlatformAdapter(BasePlatformAdapter):
         # to deliver the next message.
         asyncio.create_task(self.handle_message(event))
         return web.json_response({"ok": True, "queued": True})
+
+    def _maybe_seed_transcript(
+        self,
+        source: Any,
+        history: Any,
+    ) -> None:
+        """Seed daemon transcript from canvas-shipped history on a fresh
+        session. See class docstring + task #385 for rationale."""
+        if not isinstance(history, list) or not history:
+            return
+        store = getattr(self, "_session_store", None)
+        if store is None:
+            return
+        try:
+            entry = store.get_or_create_session(source)
+            existing = store.load_transcript(entry.session_id)
+            if len(existing) >= len(history):
+                return  # daemon already has at least as much — don't re-seed
+            for turn in history:
+                if not isinstance(turn, dict):
+                    continue
+                store.append_to_transcript(entry.session_id, turn)
+        except Exception:
+            logger.exception("molecule-a2a: transcript seed failed; continuing")
 
     # ---- outbound (send → HTTP POST to callback) ---------------------
 
