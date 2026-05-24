@@ -82,6 +82,23 @@ from gateway.platforms.base import (
 )
 from gateway.config import Platform
 
+# Import delegation_tools lazily so the adapter loads without httpx
+# being a hard import-time requirement (hermes already depends on aiohttp;
+# httpx is added as a dep of this plugin). If the import fails hermes
+# will still boot but delegation tools won't work.
+_deLEGATION_TOOLS: Any = None
+
+
+def _get_delegation_tools():
+    global _deLEGATION_TOOLS
+    if _deLEGATION_TOOLS is None:
+        try:
+            from . import delegation_tools as dt  # type: ignore[attr-defined]
+            _deLEGATION_TOOLS = dt
+        except Exception:  # pragma: no cover - defensive, module already tested
+            _deLEGATION_TOOLS = None
+    return _deLEGATION_TOOLS
+
 
 def _platform_identity(name: str):
     """Pick the right Platform-shaped identity for the installed hermes.
@@ -125,6 +142,22 @@ class MoleculeA2APlatformAdapter(BasePlatformAdapter):
         self._port: int = int(extra.get("port", DEFAULT_PORT))
         self._default_callback_url: Optional[str] = extra.get("callback_url")
         self._shared_secret: str = str(extra.get("shared_secret", "") or "")
+        # Optional platform URL and workspace ID for delegation tools.
+        # In-container hermes: PLATFORM_URL defaults to host.docker.internal:8080.
+        # External hermes (via hermes-channel-molecule): set these in the
+        # config so the delegation tools can reach the platform.
+        self._platform_url: str = extra.get(
+            "platform_url", "http://host.docker.internal:8080"
+        )
+        self._workspace_id: str = extra.get("workspace_id", "")
+        # Push config into delegation_tools so hermes can call list_peers etc.
+        # without the module having to re-import the adapter or hold circular refs.
+        dt = _get_delegation_tools()
+        if dt is not None:
+            dt.configure(
+                platform_url=self._platform_url,
+                workspace_id=self._workspace_id,
+            )
         self._runner: Optional[Any] = None  # aiohttp AppRunner
         self._site: Optional[Any] = None    # aiohttp TCPSite
         # Per-chat callback URL learned from the inbound payload. Lets
