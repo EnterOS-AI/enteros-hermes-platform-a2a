@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package + test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+
+      # ---- Merge-blocking suite ---------------------------------------
+      # tests/test_delegation_tools.py is fully self-contained: it loads
+      # delegation_tools.py by file path and mocks httpx, so it never
+      # imports the hermes gateway runtime. This is the suite that gates
+      # the branch — if it fails, the job (and the PR) is red.
+      - name: Run delegation-tools tests (gating)
+        run: pytest -q tests/test_delegation_tools.py
+
+      # ---- Real-contract adapter suite (best effort) ------------------
+      # tests/test_adapter.py exercises the REAL BasePlatformAdapter
+      # subclass relationship, so it needs the hermes-agent fork carrying
+      # feat/platform-adapter-plugins on sys.path (conftest.py looks for
+      # it at ~/.hermes/hermes-agent). We provision it here and run those
+      # tests. This step is allowed to fail without failing the job: the
+      # fork's gateway.platforms.base imports aiohttp_socks, which the
+      # fork does not declare as a dependency, so a clean install cannot
+      # guarantee a green import. Keeping it non-gating means a real
+      # delegation-tools regression still blocks the PR while we don't
+      # gate the branch on an undeclared upstream dependency. Tighten to
+      # gating once the fork declares aiohttp_socks (or the adapter tests
+      # stub the gateway, as hermes-channel-molecule does).
+      - name: Provision hermes-agent fork for adapter tests
+        continue-on-error: true
+        run: |
+          git clone --depth 1 \
+            --branch feat/platform-adapter-plugins \
+            https://git.moleculesai.app/molecule-ai/hermes-agent.git \
+            "$HOME/.hermes/hermes-agent"
+
+      - name: Run adapter contract tests (non-gating)
+        continue-on-error: true
+        run: pytest -q tests/test_adapter.py
