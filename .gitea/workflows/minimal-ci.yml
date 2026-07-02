@@ -1,0 +1,10 @@
+name: minimal-ci
+
+on: [push, pull_request]
+
+jobs:
+  minimal-validate:
+    uses: molecule-ai/molecule-ci/.gitea/workflows/_reusable-minimal-validate.yml@c8cc5b04bf55da97b32941ad2791291b29859df5
+    permissions:
+      contents: write
+      statuses: write
