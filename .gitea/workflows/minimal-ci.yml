@@ -22,17 +22,20 @@ jobs:
           python-version: "3.11"
       - name: Fetch immutable molecule-ci validator
         run: |
-          git init -q .molecule-ci
-          git -C .molecule-ci remote add origin \
+          test -n "${RUNNER_TEMP:-}"
+          CI_ROOT="$RUNNER_TEMP/molecule-ci-ssot"
+          mkdir "$CI_ROOT"
+          git init -q "$CI_ROOT"
+          git -C "$CI_ROOT" remote add origin \
             https://git.moleculesai.app/molecule-ai/molecule-ci.git
-          git -C .molecule-ci fetch -q --depth 1 origin "$MOLECULE_CI_REF"
-          git -C .molecule-ci checkout -q --detach FETCH_HEAD
-          test "$(git -C .molecule-ci rev-parse HEAD)" = "$MOLECULE_CI_REF"
+          git -C "$CI_ROOT" fetch -q --depth 1 origin "$MOLECULE_CI_REF"
+          git -C "$CI_ROOT" checkout -q --detach FETCH_HEAD
+          test "$(git -C "$CI_ROOT" rev-parse HEAD)" = "$MOLECULE_CI_REF"
       - run: pip install --break-system-packages pyyaml -q
       - name: Execute canonical baseline validator
         run: |
           set -o pipefail
-          python3 .molecule-ci/scripts/minimal_validate.py "$GITHUB_WORKSPACE" \
+          python3 "$RUNNER_TEMP/molecule-ci-ssot/scripts/minimal_validate.py" "$GITHUB_WORKSPACE" \
             | tee /tmp/minimal-validate.log
       - name: Assert execution sentinel
         run: grep -qxF 'minimal-validate:sentinel:executed' /tmp/minimal-validate.log
