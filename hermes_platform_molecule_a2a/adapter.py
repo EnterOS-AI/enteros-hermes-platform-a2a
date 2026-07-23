@@ -171,7 +171,15 @@ class MoleculeA2APlatformAdapter(BasePlatformAdapter):
 
     # ---- lifecycle ----------------------------------------------------
 
-    async def connect(self) -> bool:
+    # ``is_reconnect`` (hermes >= 0.19): the gateway's base-adapter ABC
+    # grew a keyword-only flag (False on cold boot, True when the
+    # reconnect watcher re-establishes a dropped platform). Accept and
+    # ignore it — our listener setup is identical either way — but keep
+    # the default so pre-0.19 gateways (which call connect() bare)
+    # still work. Without this, 0.19 boot fails with "unexpected
+    # keyword argument 'is_reconnect'" and :8645 never binds
+    # (2026-07-23 first-boot hang).
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not AIOHTTP_AVAILABLE:
             logger.error("aiohttp is required for molecule-a2a adapter")
             return False
