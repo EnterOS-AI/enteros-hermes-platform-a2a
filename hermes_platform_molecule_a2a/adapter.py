@@ -135,6 +135,19 @@ class MoleculeA2APlatformAdapter(BasePlatformAdapter):
     """Receive A2A peer messages over HTTP, dispatch into the hermes
     gateway, and POST agent replies back to the molecule-runtime."""
 
+    # hermes >= 0.19 authz contract (gateway/authz_mixin.py): declaring
+    # authorization_is_upstream makes the gateway honor THIS adapter's
+    # intake decision instead of applying its pairing/allowlist DM
+    # policies. That is correct here: every inbound message is
+    # authenticated upstream by the platform shared-secret
+    # (X-Molecule-A2A-Secret, hmac.compare_digest in _handle_inbound)
+    # on a localhost-only listener — there are no "unknown senders" to
+    # pair. Without this flag, 0.19's default pairing policy silently
+    # DROPPED platform messages mid-session ("Dropping message from
+    # unauthorized user in active session", 2026-07-23) and the
+    # executor's pending future expired as a 600s timeout bubble.
+    authorization_is_upstream = True
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, _platform_identity(PLATFORM_NAME))
         extra = getattr(config, "extra", None) or {}
