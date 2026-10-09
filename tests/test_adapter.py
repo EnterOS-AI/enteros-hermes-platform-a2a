@@ -505,3 +505,20 @@ async def test_plugin_adapter_no_session_store_seed_is_noop():
                 assert r.status == 200
     finally:
         await adapter.disconnect()
+
+
+def test_authorization_is_upstream_flag_is_declared():
+    """Deterministic gate for the 2026-07-23 active-session drop (review
+    wf_3a7b849d #5). hermes >= 0.19's authz_mixin reads
+    ``getattr(adapter, "authorization_is_upstream", False)`` to decide whether
+    to honor THIS adapter's intake decision instead of applying its own
+    pairing/allowlist DM policy. Every inbound here is authenticated upstream
+    (platform shared-secret, localhost-only listener), so the flag MUST stay
+    True — if it regresses, 0.19 silently drops platform messages once a
+    session exists and the executor future expires as a 600s canvas timeout.
+    A class-level attribute is exactly what ``getattr(adapter, ...)`` returns
+    for any instance (instances inherit it), so pinning the class attribute is
+    the complete, instantiation-free gate."""
+    assert MoleculeA2APlatformAdapter.authorization_is_upstream is True
+    # getattr with the same default the mixin uses, resolved on the class.
+    assert getattr(MoleculeA2APlatformAdapter, "authorization_is_upstream", False) is True
