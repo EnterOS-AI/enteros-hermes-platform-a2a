@@ -39,7 +39,16 @@ from hermes_platform_molecule_a2a.adapter import (
 
 from gateway.config import PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent
-from hermes_cli.plugins import PluginPlatformIdentifier
+
+# Upstream hermes (#17751+) opened the Platform enum; only the retired fork
+# ships PluginPlatformIdentifier. The adapter picks whichever exists
+# (_platform_identity), so the tests accept either.
+try:
+    from hermes_cli.plugins import PluginPlatformIdentifier
+    PLATFORM_TYPES = (PluginPlatformIdentifier,)
+except ImportError:
+    from gateway.config import Platform
+    PLATFORM_TYPES = (Platform,)
 
 
 # ---- helpers --------------------------------------------------------
@@ -66,7 +75,7 @@ def test_check_requirements_returns_true_when_aiohttp_present():
 def test_adapter_subclasses_base_and_uses_plugin_identifier():
     adapter = _make_adapter()
     assert isinstance(adapter, BasePlatformAdapter)
-    assert isinstance(adapter.platform, PluginPlatformIdentifier)
+    assert isinstance(adapter.platform, PLATFORM_TYPES)
     assert adapter.platform.value == PLATFORM_NAME
 
 
@@ -159,6 +168,50 @@ async def test_inbound_post_dispatches_to_message_handler():
     assert event.source.user_name == "ops-agent"
     # Per-chat callback was learned from the payload.
     assert adapter._callbacks["peer-uuid-1"] == "http://example.test/reply"
+    # The final send's reply_to is the event's reply anchor; the runtime
+    # rejects a reply without it.
+    if hasattr(event, "reply_anchor_override"):
+        assert event.reply_anchor_override == "msg-1"
+
+
+@pytest.mark.asyncio
+async def test_final_send_reply_to_is_the_inbound_message_id():
+    """The anchor the gateway's final send uses must be the inbound id.
+
+    hermes v0.22.3+ returns None for an internal event's anchor unless
+    reply_anchor_override is set; the runtime correlates replies by it.
+    """
+    from gateway.platforms import base as gateway_base
+
+    anchor = getattr(gateway_base, "_reply_anchor_for_event", None)
+    if anchor is None:
+        pytest.skip("this hermes has no _reply_anchor_for_event")
+    port = _free_port()
+    adapter = _make_adapter(host="127.0.0.1", port=port)
+    received: List[MessageEvent] = []
+
+    async def handler(event: MessageEvent):
+        received.append(event)
+        return None
+
+    adapter.set_message_handler(handler)
+    try:
+        await adapter.connect()
+        async with ClientSession(timeout=ClientTimeout(total=5)) as session:
+            async with session.post(
+                f"http://127.0.0.1:{port}{INBOUND_PATH}",
+                json={"chat_id": "peer-uuid-2", "content": "hi", "message_id": "msg-2"},
+            ) as r:
+                assert r.status == 200
+        for _ in range(50):
+            if received:
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        await adapter.disconnect()
+
+    assert len(received) == 1
+    assert anchor(received[0]) == "msg-2"
 
 
 @pytest.mark.asyncio

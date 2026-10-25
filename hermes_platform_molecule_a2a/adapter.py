@@ -25,7 +25,10 @@ target on the running hermes daemon. The flow is symmetric:
 `internal=True` on the MessageEvent bypasses the per-platform user
 allowlist check at gateway/run.py — A2A messages are pre-authorized by
 the platform layer (peer registry + tenant isolation) before they ever
-reach hermes.
+reach hermes. It also keeps them out of the gateway's durable ingress
+queue and its text debounce. Because hermes v0.22.3+ never reply-anchors
+an internal event, the inbound handler sets ``reply_anchor_override`` to
+the message id, which is what reaches ``send()`` as ``reply_to``.
 
 Configuration
 =============
@@ -287,14 +290,24 @@ class MoleculeA2APlatformAdapter(BasePlatformAdapter):
         # messages_history is malformed; the turn still dispatches.
         self._maybe_seed_transcript(source, payload.get("messages_history"))
 
+        message_id = str(payload.get("message_id") or "")
         event = MessageEvent(
             text=content,
             message_type=MessageType.TEXT,
             source=source,
-            message_id=str(payload.get("message_id") or ""),
+            message_id=message_id,
             internal=True,
             raw_message=payload,
         )
+        # The runtime correlates our reply with its pending request by
+        # ``reply_to``, which the gateway takes from the event's reply anchor.
+        # Since hermes v0.22.3 the anchor of an internal event is None (the id
+        # of a synthetic wake is its producer identity, upstream 1b39742963),
+        # so every final send arrived with reply_to=None and the turn timed
+        # out. ``reply_anchor_override`` is checked before that rule; hermes
+        # versions without the field never dropped the anchor.
+        if message_id and hasattr(event, "reply_anchor_override"):
+            event.reply_anchor_override = message_id
 
         # handle_message returns quickly — it spawns a background task.
         # Ack the HTTP request immediately so the runtime is unblocked
