@@ -99,6 +99,32 @@ def test_register_calls_plugin_context_with_correct_name():
     assert captured["requirements_check"]() is True
 
 
+def test_register_uses_upstream_register_platform_when_present():
+    """The path every shipped hermes takes (#17751's ctx.register_platform).
+
+    The legacy-fork test above covers register_platform_adapter only; a
+    context offering both must take register_platform, and its factory must
+    build our adapter from the gateway's PlatformConfig.
+    """
+    captured: Dict[str, Any] = {}
+
+    class FakeCtx:
+        def register_platform(self, *, name, label, adapter_factory, check_fn, install_hint=None, **_):
+            captured.update(name=name, label=label, factory=adapter_factory,
+                            check_fn=check_fn, install_hint=install_hint)
+
+        def register_platform_adapter(self, **_):  # pragma: no cover - must not be used
+            raise AssertionError("register_platform must win over the legacy socket")
+
+    register(FakeCtx())
+
+    assert captured["name"] == PLATFORM_NAME
+    assert captured["check_fn"] is check_molecule_a2a_requirements
+    assert captured["install_hint"]
+    adapter = captured["factory"](PlatformConfig(enabled=True, extra={"port": _free_port()}))
+    assert isinstance(adapter, MoleculeA2APlatformAdapter)
+
+
 # ---- live HTTP tests -----------------------------------------------
 
 
